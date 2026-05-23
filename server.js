@@ -6,29 +6,50 @@ const QRCode = require('qrcode');
 const cors = require('cors');
 
 const app = express();
-app.use(cors());
+
+// 1. Robust CORS Configuration
+app.use(cors({
+    origin: 'https://nagoriksheba.com', // Explicitly allow your frontend
+    methods: ['POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type']
+}));
+
 app.use(express.json());
+
+// Health Check endpoint (useful for keep-alive)
+app.get('/health', (req, res) => res.status(200).send('OK'));
 
 app.post('/api/v1/documents/generate', async (req, res) => {
     let browser = null;
     try {
         const data = req.body;
-        
         const qrString = `Contract:${data.vehicleNo || 'N/A'}-${data.contractDate || 'N/A'}`;
         const qrCodeBase64 = await QRCode.toDataURL(qrString);
 
         const templatePath = path.join(__dirname, 'views', 'template.ejs');
         const html = await ejs.renderFile(templatePath, { ...data, qrCode: qrCodeBase64 });
 
+        // 2. Optimized Puppeteer Launch for Render Free Tier
         browser = await puppeteer.launch({
             headless: 'new',
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--font-render-hinting=none'],
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--no-zygote',
+                '--single-process' // Reduces memory usage significantly
+            ],
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable'
         });
 
         const page = await browser.newPage();
-        await page.setContent(html, { waitUntil: 'networkidle0' });
-        await page.evaluateHandle('document.fonts.ready');
+        
+        // 3. Set a reasonable timeout and wait for content
+        await page.setContent(html, { 
+            waitUntil: 'domcontentloaded', // Faster than networkidle0
+            timeout: 30000 
+        });
 
         const pdfBuffer = await page.pdf({
             format: 'A4',
@@ -45,9 +66,12 @@ app.post('/api/v1/documents/generate', async (req, res) => {
         return res.send(pdfBuffer);
 
     } catch (error) {
+        console.error("PDF Error:", error);
         return res.status(500).json({ error: "Failed to generate PDF", details: error.message });
     } finally {
-        if (browser !== null) await browser.close();
+        if (browser !== null) {
+            await browser.close();
+        }
     }
 });
 
